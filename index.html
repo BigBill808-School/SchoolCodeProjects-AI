@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>2D Platformer with Advanced Dash</title>
+    <style>
+        body { margin: 0; overflow: hidden; }
+        canvas { display: block; background-color: white; }
+        #pauseMenu { display: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(0, 0, 0, 0.8); color: white; padding: 20px; border-radius: 10px; text-align: center; }
+        #pauseMenu input { margin: 5px; padding: 5px; width: 100px; }
+        #staminaBar { position: absolute; top: 10px; left: 10px; width: 100px; height: 10px; background: red; }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+    <div id="staminaBar"></div>
+    <div id="pauseMenu">
+        <h2>Pause Menu</h2>
+        <p>Change Hotkeys:</p>
+        <label>Dash: <input id="dashKey" type="text" maxlength="1"></label><br>
+        <label>Jump: <input id="jumpKey" type="text" maxlength="1"></label><br>
+        <label>Climb: <input id="climbKey" type="text" maxlength="1"></label><br>
+        <label>Respawn: <input id="respawnKey" type="text" maxlength="1"></label><br>
+        <button onclick="resumeGame()">Resume</button>
+    </div>
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const WIDTH = 800, HEIGHT = 600;
+        canvas.width = WIDTH;
+        canvas.height = HEIGHT;
+
+        // Player object
+        let player = {
+            x: 100,
+            y: HEIGHT - 100, // Spawn above the ground platform
+            vx: 0,
+            vy: 0,
+            width: 50,
+            height: 50,
+            canJump: true,
+            isDashing: false,
+            dashDir: { x: 0, y: 0 },
+            dashStart: 0,
+            dashDuration: 125,
+            jumpBuffer: 0,
+            onGround: false,
+            onWall: false,
+            wallSide: null, // Track which side of wall we're on
+            isClimbing: false,
+            stamina: 100, // Stamina for climbing
+            canDash: true // Dash cooldown
+        };
+
+        // Platforms and walls
+        const platforms = [
+            { x: 0, y: HEIGHT - 50, width: 800, height: 50, color: 'green' }, // Ground
+            { x: 200, y: 450, width: 100, height: 20, color: 'green' }, // Floating platform
+        ];
+
+        const walls = [
+            { x: 400, y: 300, width: 20, height: 200, color: 'brown' }, // Vertical wall
+            { x: 600, y: 400, width: 20, height: 150, color: 'red' } // Red wall
+        ];
+
+        // Key states
+        const keys = {};
+        const DASH_SPEED = 25;
+        const JUMP_POWER = -15;
+        const GRAVITY = 0.8;
+        const CLIMB_SPEED = -3;
+
+        // Physics parameters
+        const WALL_BOUNCE_MULTIPLIER = 1.2;
+        const DIAGONAL_JUMP_BOOST = 1.25;
+        const JUMP_REDUCTION = 0.7;
+
+        // Hotkeys
+        let hotkeys = {
+            dash: 'KeyX',
+            jump: 'KeyC',
+            climb: 'KeyZ',
+            pause: 'Escape',
+            respawn: 'KeyR'
+        };
+
+        // Game state
+        let isPaused = false;
+
+        // Game loop
+        function gameLoop() {
+            if (!isPaused) {
+                handleInput();
+                updatePhysics();
+                checkCollisions();
+                draw();
+            }
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Input handling
+        function handleInput() {
+            // Dash handling
+            if (keys[hotkeys.dash] && !player.isDashing && player.canDash) {
+                const dir = getDashDirection();
+                if (dir.x !== 0 || dir.y !== 0) {
+                    player.isDashing = true;
+                    player.dashDir = dir;
+                    player.dashStart = Date.now();
+                    player.vx = dir.x * DASH_SPEED;
+                    player.vy = dir.y * DASH_SPEED;
+                    player.canDash = false; // Disable dash until replenished
+                }
+            }
+
+            // Jump buffer handling
+            if (keys[hotkeys.jump]) {
+                player.jumpBuffer = 3;
+            }
+
+            // Climb handling
+            if (keys[hotkeys.climb] && player.onWall && player.stamina > 0) {
+                player.isClimbing = true;
+                if (keys['ArrowUp']) player.vy = CLIMB_SPEED;
+                if (keys['ArrowDown']) player.vy = -CLIMB_SPEED;
+                player.stamina -= 1; // Reduce stamina
+            } else {
+                player.isClimbing = false;
+            }
+
+            // Pause handling
+            if (keys[hotkeys.pause]) {
+                pauseGame();
+                keys[hotkeys.pause] = false; // Prevent repeated triggering
+            }
+
+            // Respawn handling
+            if (keys[hotkeys.respawn]) {
+                resetGame();
+                keys[hotkeys.respawn] = false; // Prevent repeated triggering
+            }
+        }
+
+        function resetGame() {
+            player.x = 100;
+            player.y = HEIGHT - 100; // Reset to spawn position
+            player.vx = 0;
+            player.vy = 0;
+            player.canJump = true;
+            player.isDashing = false;
+            player.dashDir = { x: 0, y: 0 };
+            player.dashStart = 0;
+            player.jumpBuffer = 0;
+            player.onGround = false;
+            player.onWall = false;
+            player.wallSide = null;
+            player.isClimbing = false;
+            player.stamina = 100; // Reset stamina
+            player.canDash = true; // Reset dash
+        }
+
+        function getDashDirection() {
+            const dir = { x: 0, y: 0 };
+            if (keys['ArrowUp']) dir.y -= 1;
+            if (keys['ArrowDown']) dir.y += 1;
+            if (keys['ArrowLeft']) dir.x -= 1;
+            if (keys['ArrowRight']) dir.x += 1;
+
+            if (dir.x !== 0 && dir.y !== 0) {
+                dir.x *= 0.7071;
+                dir.y *= 0.7071;
+            }
+            return dir;
+        }
+
+        function updatePhysics() {
+            // Handle dash expiration
+            if (player.isDashing && Date.now() - player.dashStart > player.dashDuration) {
+                player.isDashing = false;
+                if (!(player.dashDir.y > 0 && player.dashDir.x !== 0)) {
+                    player.vx = 0;
+                    player.vy = 0;
+                }
+            }
+
+            // Handle jump buffer
+            if (player.jumpBuffer > 0) {
+                tryJump();
+                player.jumpBuffer--;
+            }
+
+            // Regular movement
+            if (!player.isDashing) {
+                player.vx = (keys['ArrowRight'] - keys['ArrowLeft']) * 5;
+            }
+
+            // Apply gravity if not climbing
+            if (!player.isDashing && !player.onGround && !player.isClimbing) {
+                player.vy += GRAVITY;
+            }
+
+            // Update position
+            player.x += player.vx;
+            player.y += player.vy;
+
+            // Replenish stamina if on ground or wall
+            if (player.onGround || player.onWall) {
+                player.stamina = Math.min(player.stamina + 1, 100); // Replenish stamina
+            }
+
+            // Replenish dash after 1 tick when landing
+            if (player.onGround) {
+                player.canDash = true;
+            }
+        }
+
+        function tryJump() {
+            if (!player.canJump) return;
+
+            // Wall jump
+            if (player.onWall) {
+                player.vy = JUMP_POWER * WALL_BOUNCE_MULTIPLIER;
+                player.vx = (player.wallSide === 'left' ? DASH_SPEED : -DASH_SPEED) * 0.7;
+                player.canJump = false;
+                return;
+            }
+
+            // Regular jump
+            if (player.onGround) {
+                player.vy = JUMP_POWER;
+                player.canJump = false;
+            }
+        }
+
+        function checkCollisions() {
+            // Store the player's position before moving
+            let prevX = player.x;
+            let prevY = player.y;
+
+            // Reset collision states
+            player.onGround = false;
+            player.onWall = false;
+            player.wallSide = null;
+
+            // Platform collisions
+            for (let platform of platforms) {
+                if (player.x < platform.x + platform.width &&
+                    player.x + player.width > platform.x &&
+                    player.y < platform.y + platform.height &&
+                    player.y + player.height > platform.y) {
+
+                    // Calculate overlaps
+                    let overlapX = Math.min(
+                        player.x + player.width - platform.x,
+                        platform.x + platform.width - player.x
+                    );
+                    let overlapY = Math.min(
+                        player.y + player.height - platform.y,
+                        platform.y + platform.height - player.y
+                    );
+
+                    // Resolve collision
+                    if (overlapX < overlapY) { // X-axis collision
+                        if (player.x < platform.x) {
+                            player.x = platform.x - player.width;
+                        } else {
+                            player.x = platform.x + platform.width;
+                        }
+                        player.vx = 0;
+                    } else { // Y-axis collision
+                        if (player.y < platform.y) {
+                            player.y = platform.y - player.height;
+                            player.onGround = true;
+                            player.canJump = true;
+                        } else {
+                            player.y = platform.y + platform.height;
+                        }
+                        player.vy = 0;
+                    }
+                }
+            }
+
+            // Wall collisions (including red walls)
+            for (let wall of walls) {
+                if (player.x < wall.x + wall.width &&
+                    player.x + player.width > wall.x &&
+                    player.y < wall.y + wall.height &&
+                    player.y + player.height > wall.y) {
+
+                    // Revert player position to before the collision
+                    player.x = prevX;
+                    player.y = prevY;
+
+                    // Mark as on wall and set wall side
+                    player.onWall = true;
+                    player.canJump = true;
+
+                    if (player.x < wall.x) {
+                        player.wallSide = 'left';
+                    } else {
+                        player.wallSide = 'right';
+                    }
+
+                    // Stop horizontal movement
+                    player.vx = 0;
+                }
+            }
+        }
+
+        function draw() {
+            // Clear the canvas
+            ctx.clearRect(0, 0, WIDTH, HEIGHT);
+
+            // Draw platforms
+            for (let platform of platforms) {
+                ctx.fillStyle = platform.color;
+                ctx.fillRect(platform.x, platform.y, platform.width, platform.height);
+            }
+
+            // Draw walls
+            for (let wall of walls) {
+                ctx.fillStyle = wall.color;
+                ctx.fillRect(wall.x, wall.y, wall.width, wall.height);
+            }
+
+            // Draw player
+            ctx.fillStyle = 'blue';
+            ctx.fillRect(player.x, player.y, player.width, player.height);
+
+            // Draw stamina bar
+            document.getElementById('staminaBar').style.width = `${player.stamina}px`;
+        }
+
+        // Pause menu functions
+        function pauseGame() {
+            isPaused = true;
+            document.getElementById('pauseMenu').style.display = 'block';
+            document.getElementById('dashKey').value = hotkeys.dash.replace('Key', '');
+            document.getElementById('jumpKey').value = hotkeys.jump.replace('Key', '');
+            document.getElementById('climbKey').value = hotkeys.climb.replace('Key', '');
+            document.getElementById('respawnKey').value = hotkeys.respawn.replace('Key', '');
+        }
+
+        function resumeGame() {
+            isPaused = false;
+            document.getElementById('pauseMenu').style.display = 'none';
+            hotkeys.dash = 'Key' + document.getElementById('dashKey').value.toUpperCase();
+            hotkeys.jump = 'Key' + document.getElementById('jumpKey').value.toUpperCase();
+            hotkeys.climb = 'Key' + document.getElementById('climbKey').value.toUpperCase();
+            hotkeys.respawn = 'Key' + document.getElementById('respawnKey').value.toUpperCase();
+        }
+
+        // Input handling
+        window.addEventListener('keydown', e => {
+            keys[e.code] = true;
+        });
+        window.addEventListener('keyup', e => {
+            keys[e.code] = false;
+        });
+
+        // Start the game loop
+        gameLoop();
+    </script>
+</body>
+</html>
